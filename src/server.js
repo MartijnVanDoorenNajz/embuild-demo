@@ -12,6 +12,9 @@ const OpenAI = require("openai");
 const fetch = (...args) =>
   import("node-fetch").then(({ default: f }) => f(...args));
 const { quoteTemplate } = require("./templates/quoteTemplate");
+// ---- Async job registry (in-memory) ----
+const jobs = new Map();
+// shape: jobs.set(id, { status: "queued" | "processing" | "ready" | "error", url, fileName, error })
 
 // ---------- CONFIG ----------
 const app = express();
@@ -54,6 +57,126 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+async function generateQuoteAsync(id, payload) {
+  const {
+    beforeFile,
+    afterFile,
+    description,
+    clientName,
+    siteAddress,
+    generateAfter,
+  } = payload;
+
+  jobs.set(id, { ...(jobs.get(id) || {}), status: "processing" });
+
+  // Load & enrich company config
+  const company = await fs.readJSON(
+    path.join(__dirname, "config", "company.json")
+  );
+  company.brandColor = BRAND_COLOR;
+  try {
+    const logoPath = path.join(UPLOADS_DIR, "brand-logo.png");
+    await downloadFile(LOGO_URL, logoPath);
+    company.logo = logoPath;
+  } catch (e) {
+    console.warn("Logo download failed, proceeding without:", e.message);
+  }
+
+  // Parse bullets ➜ LLM NL bullets
+  const baseBullets = String(description || "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*[-*•]\s*/, "").trim())
+    .filter(Boolean);
+  const projectBulletsNL = await generateDutchBullets(baseBullets);
+
+  // BEFORE image
+  const beforeLocalPath = beforeFile.path;
+  const beforeImgDataURI = await toDataURI(beforeLocalPath);
+
+  // AFTER image (uploaded or AI-generated)
+  let afterImgDataURI = null;
+  if (afterFile) {
+    afterImgDataURI = await toDataURI(afterFile.path);
+  } else if (
+    String(generateAfter).toLowerCase() === "true" &&
+    PUBLIC_BASE_URL &&
+    NANO_BANANA_KEY
+  ) {
+    const beforePublicUrl = `${PUBLIC_BASE_URL}/uploads/${path.basename(
+      beforeLocalPath
+    )}`;
+    const editPrompt =
+      (await generateAfterEditPrompt({
+        bulletPoints: projectBulletsNL,
+        beforeImagePublicUrl: beforePublicUrl,
+      })) ||
+      "Maak een realistische AFTER-versie van de BEFORE-foto met dezelfde camerahoek; pas alleen zichtbare dakelementen aan.";
+
+    const taskId = await submitNanoBananaTask({
+      prompt: editPrompt,
+      imageUrl: beforePublicUrl,
+      imageSize: "4:3",
+      numImages: 1,
+    });
+    const { resultUrl } = await pollNanoBananaTask(taskId);
+    const afterPath = path.join(UPLOADS_DIR, `after-${Date.now()}.jpg`);
+    await downloadFile(resultUrl, afterPath);
+    afterImgDataURI = await toDataURI(afterPath);
+  }
+
+  // Meta
+  const now = dayjs();
+  const meta = {
+    quoteId: id,
+    date: now.format("D MMMM YYYY"),
+    clientName: clientName || "",
+    siteAddress: siteAddress || "",
+  };
+
+  // HTML
+  const html = quoteTemplate({
+    company,
+    meta,
+    projectBulletsNL,
+    beforeImgDataURI,
+    afterImgDataURI,
+    showAfterPlaceholder: !afterImgDataURI,
+  });
+
+  // PDF
+  const browser = await puppeteer.launch({
+    headless: "new",
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--no-zygote",
+    ],
+  });
+  const page = await browser.newPage();
+  await page.setContent(html, { waitUntil: "networkidle0" });
+  await page.emulateMediaType("screen");
+
+  const fileName = `${id}.pdf`;
+  const pdfBuffer = await page.pdf({
+    format: "A4",
+    printBackground: true,
+    margin: { top: "12mm", right: "12mm", bottom: "12mm", left: "12mm" },
+  });
+  await browser.close();
+
+  const pdfPath = path.join(OUTPUT_DIR, fileName);
+  await fs.writeFile(pdfPath, pdfBuffer);
+
+  const fileUrl = PUBLIC_BASE_URL
+    ? `${PUBLIC_BASE_URL}/output/${encodeURIComponent(fileName)}`
+    : `/output/${encodeURIComponent(fileName)}`;
+
+  jobs.set(id, { status: "ready", url: fileUrl, fileName });
+  return { fileName, pdfPath, url: fileUrl };
+}
+
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
@@ -81,6 +204,135 @@ async function downloadFile(url, destPath) {
   const buf = await r.arrayBuffer();
   await fs.writeFile(destPath, Buffer.from(buf));
   return destPath;
+}
+
+async function generateQuoteAsync(id, payload) {
+  const {
+    beforeFile,
+    afterFile,
+    description,
+    clientName,
+    siteAddress,
+    generateAfter,
+  } = payload;
+
+  jobs.set(id, { ...(jobs.get(id) || {}), status: "processing" });
+
+  // Load & enrich company config
+  const company = await fs.readJSON(
+    path.join(__dirname, "config", "company.json")
+  );
+  company.brandColor = BRAND_COLOR;
+  try {
+    const logoPath = path.join(UPLOADS_DIR, "brand-logo.png");
+    await downloadFile(LOGO_URL, logoPath);
+    company.logo = logoPath;
+  } catch (e) {
+    console.warn("Logo download failed, proceeding without:", e.message);
+  }
+
+  // Parse bullets ➜ LLM NL bullets
+  const baseBullets = String(description || "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*[-*•]\s*/, "").trim())
+    .filter(Boolean);
+  const projectBulletsNL = await generateDutchBullets(baseBullets);
+
+  // BEFORE image
+  const beforeLocalPath = beforeFile.path;
+  const beforeImgDataURI = await toDataURI(beforeLocalPath);
+
+  // AFTER image (uploaded or AI-generated)
+  let afterImgDataURI = null;
+  if (afterFile) {
+    afterImgDataURI = await toDataURI(afterFile.path);
+  } else if (
+    String(generateAfter).toLowerCase() === "true" &&
+    PUBLIC_BASE_URL &&
+    NANO_BANANA_KEY
+  ) {
+    const beforePublicUrl = `${PUBLIC_BASE_URL}/uploads/${path.basename(
+      beforeLocalPath
+    )}`;
+    const editPrompt =
+      (await generateAfterEditPrompt({
+        bulletPoints: projectBulletsNL,
+        beforeImagePublicUrl: beforePublicUrl,
+      })) ||
+      "Maak een realistische AFTER-versie van de BEFORE-foto met dezelfde camerahoek; pas alleen zichtbare dakelementen aan.";
+
+    const taskId = await submitNanoBananaTask({
+      prompt: editPrompt,
+      imageUrl: beforePublicUrl,
+      imageSize: "4:3",
+      numImages: 1,
+    });
+    const { resultUrl } = await pollNanoBananaTask(taskId);
+    const afterPath = path.join(UPLOADS_DIR, `after-${Date.now()}.jpg`);
+    await downloadFile(resultUrl, afterPath);
+    afterImgDataURI = await toDataURI(afterPath);
+  }
+
+  // Meta
+  const now = dayjs();
+  const meta = {
+    quoteId: id,
+    date: now.format("D MMMM YYYY"),
+    clientName: clientName || "",
+    siteAddress: siteAddress || "",
+  };
+
+  console.log("Generating quote", id, {
+    beforeImgDataURI: Boolean(beforeImgDataURI),
+    afterImgDataURI: Boolean(afterImgDataURI),
+  });
+
+  // HTML
+  const html = quoteTemplate({
+    company,
+    meta,
+    projectBulletsNL,
+    beforeImgDataURI,
+    afterImgDataURI,
+    showAfterPlaceholder: !afterImgDataURI,
+  });
+
+  console.log("Generated HTML for quote", id);
+
+  // PDF
+  const browser = await puppeteer.launch({
+    headless: "new",
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--no-zygote",
+    ],
+  });
+  const page = await browser.newPage();
+  await page.setContent(html, { waitUntil: "networkidle0" });
+  await page.emulateMediaType("screen");
+
+  const fileName = `${id}.pdf`;
+  const pdfBuffer = await page.pdf({
+    format: "A4",
+    printBackground: true,
+    margin: { top: "12mm", right: "12mm", bottom: "12mm", left: "12mm" },
+  });
+  await browser.close();
+
+  const pdfPath = path.join(OUTPUT_DIR, fileName);
+  await fs.writeFile(pdfPath, pdfBuffer);
+
+  const fileUrl = PUBLIC_BASE_URL
+    ? `${PUBLIC_BASE_URL}/output/${encodeURIComponent(fileName)}`
+    : `/output/${encodeURIComponent(fileName)}`;
+
+  console.log("Generated PDF for quote", id, "saving to", fileUrl);
+
+  jobs.set(id, { status: "ready", url: fileUrl, fileName });
+  return { fileName, pdfPath, url: fileUrl };
 }
 
 // ---------- LLM: NL QUOTE BULLETS (short, readable) ----------
@@ -265,141 +517,75 @@ app.post(
           .status(400)
           .json({ error: "Ontbrekende vereiste: veld 'description'." });
 
-      // Load and enrich company config
-      const company = await fs.readJSON(
-        path.join(__dirname, "config", "company.json")
-      );
-      company.brandColor = BRAND_COLOR;
-      try {
-        const logoPath = path.join(UPLOADS_DIR, "brand-logo.png");
-        await downloadFile(LOGO_URL, logoPath);
-        company.logo = logoPath;
-      } catch (e) {
-        console.warn("Logo download failed, proceeding without:", e.message);
-      }
-
-      // Parse bullets ➜ LLM NL bullets
-      const baseBullets = String(description || "")
-        .split(/\r?\n/)
-        .map((line) => line.replace(/^\s*[-*•]\s*/, "").trim())
-        .filter(Boolean);
-
-      const projectBulletsNL = await generateDutchBullets(baseBullets);
-
-      // BEFORE image
-      const beforeLocalPath = beforeFile.path;
-      const beforeImgDataURI = await toDataURI(beforeLocalPath);
-
-      // AFTER image (uploaded or AI-generated)
-      let afterImgDataURI = null;
-      if (afterFile) {
-        afterImgDataURI = await toDataURI(afterFile.path);
-      } else if (
-        String(generateAfter).toLowerCase() === "true" &&
-        PUBLIC_BASE_URL &&
-        NANO_BANANA_KEY
-      ) {
-        const beforePublicUrl = `${PUBLIC_BASE_URL}/uploads/${path.basename(
-          beforeLocalPath
-        )}`;
-
-        console.log("image to use: " + beforePublicUrl);
-
-        const editPrompt = await generateAfterEditPrompt({
-          bulletPoints: projectBulletsNL,
-          beforeImagePublicUrl: beforePublicUrl,
-        });
-        const taskId = await submitNanoBananaTask({
-          prompt: editPrompt,
-          imageUrl: beforePublicUrl,
-          imageSize: "4:3",
-          numImages: 1,
-        });
-        const { resultUrl } = await pollNanoBananaTask(taskId);
-        const afterPath = path.join(UPLOADS_DIR, `after-${Date.now()}.jpg`);
-
-        console.log("result image: " + resultUrl);
-
-        await downloadFile(resultUrl, afterPath);
-        afterImgDataURI = await toDataURI(afterPath);
-      }
-
-      // Meta
+      // Create a stable ID and future URL immediately
       const now = dayjs();
       const id = String(quoteId || `Q-${now.format("YYYYMMDD-HHmmss")}`);
-      const meta = {
-        quoteId: id,
-        date: now.format("D MMMM YYYY"),
-        clientName: clientName || "",
-        siteAddress: siteAddress || "",
-      };
-
-      // HTML
-      const html = quoteTemplate({
-        company,
-        meta,
-        projectBulletsNL,
-        beforeImgDataURI,
-        afterImgDataURI,
-        showAfterPlaceholder: !afterImgDataURI,
-      });
-
-      console.log("Generating PDF for quote ID:", id);
-
-      // ---------- PDF (dual mode) ----------
-      const browser = await puppeteer.launch({
-        headless: "new",
-        args: [
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          "--disable-dev-shm-usage",
-          "--disable-gpu",
-          "--no-zygote",
-        ],
-      });
-
-      const page = await browser.newPage();
-      await page.setContent(html, { waitUntil: "networkidle0" });
-      await page.emulateMediaType("screen");
-
       const fileName = `${id}.pdf`;
-
-      // Render PDF to buffer
-      const pdfBuffer = await page.pdf({
-        format: "A4",
-        printBackground: true,
-        margin: { top: "12mm", right: "12mm", bottom: "12mm", left: "12mm" },
-      });
-
-      await browser.close();
-
-      // Always save to /output
-      const pdfPath = path.join(OUTPUT_DIR, fileName);
-      await fs.writeFile(pdfPath, pdfBuffer);
-
-      // Build a link that works both locally and when hosted
       const fileUrl = PUBLIC_BASE_URL
         ? `${PUBLIC_BASE_URL}/output/${encodeURIComponent(fileName)}`
         : `/output/${encodeURIComponent(fileName)}`;
 
-      console.log("FINAL PDF CAN BE FOUND HERE: " + pdfPath);
+      // Register job and return early
+      jobs.set(id, { status: "queued", url: fileUrl, fileName });
 
-      // Respond with JSON containing the link
-      return res.json({
+      // Kick off the heavy work AFTER we respond
+      // (fire-and-forget; any error will be recorded in jobs)
+      (async () => {
+        try {
+          await generateQuoteAsync(id, {
+            beforeFile,
+            afterFile,
+            description,
+            clientName,
+            siteAddress,
+            generateAfter,
+          });
+        } catch (e) {
+          console.error("Async generation failed for", id, e);
+          const prev = jobs.get(id) || {};
+          jobs.set(id, {
+            ...prev,
+            status: "error",
+            error: String(e.message || e),
+          });
+        }
+      })();
+
+      // Send early response with 202 Accepted
+      return res.status(202).json({
         ok: true,
-        fileName,
-        pdfPath,
-        url: fileUrl,
+        quoteId: id,
+        url: fileUrl, // where it will appear
+        statusUrl: `/quote/${encodeURIComponent(id)}/status`, // poll this
+        status: "queued",
       });
     } catch (err) {
       console.error(err);
       res.status(500).json({
-        error: "Aanmaken van de PDF-offerte is mislukt.",
+        error:
+          "Aanmaken van de PDF-offerte is gestart maar initialisatie faalde.",
         details: String(err.message || err),
       });
     }
   }
 );
+
+// Poll job status
+app.get("/quote/:id/status", (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: "Onbekend quote ID" });
+  return res.json(job);
+});
+
+// Optional: redirect to file if ready; otherwise 404
+app.get("/quote/:id", (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job || job.status !== "ready") {
+    return res.status(404).json({ error: "PDF nog niet beschikbaar" });
+  }
+  // If you prefer, do res.redirect(job.url) when PUBLIC_BASE_URL is set.
+  return res.json({ url: job.url, fileName: job.fileName, status: job.status });
+});
 
 // Static
 app.use("/output", express.static(OUTPUT_DIR));

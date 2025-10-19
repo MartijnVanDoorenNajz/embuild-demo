@@ -180,6 +180,54 @@ async function generateQuoteAsync(id, payload) {
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
+// --- CORS (no extra dependency) ---
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "*")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+
+  // Allow only listed origins, or everyone if "*" is present / no Origin header
+  if (
+    !origin ||
+    ALLOWED_ORIGINS.includes("*") ||
+    ALLOWED_ORIGINS.includes(origin)
+  ) {
+    if (origin && ALLOWED_ORIGINS.includes("*") === false) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+    } else {
+      // no Origin or wildcard: safe default for simple cases
+      res.setHeader("Access-Control-Allow-Origin", origin || "*");
+    }
+  }
+  // ensure caches vary by origin for proxies/CDNs
+  res.setHeader("Vary", "Origin");
+
+  // Allow typical methods
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+
+  // Allow headers commonly used by browsers/forms/fetch
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With"
+  );
+
+  // Cache preflight for 24h
+  res.setHeader("Access-Control-Max-Age", "86400");
+
+  // If you need cookies/auth between sites, also set:
+  // res.setHeader("Access-Control-Allow-Credentials", "true");
+
+  // Short-circuit preflight
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
 // ---------- HELPERS ----------
 const toDataURI = async (p) => {
   const abs = path.resolve(p);

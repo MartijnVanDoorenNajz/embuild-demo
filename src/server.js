@@ -173,7 +173,7 @@ async function submitNanoBananaTask({
 }) {
   const body = {
     prompt,
-    type: "IMAGETOIAMGE",
+    type: "IMAGETOIMAGE",
     imageUrls: [imageUrl],
     numImages,
     image_size: imageSize,

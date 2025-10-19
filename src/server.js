@@ -322,6 +322,9 @@ app.post(
         });
         const { resultUrl } = await pollNanoBananaTask(taskId);
         const afterPath = path.join(UPLOADS_DIR, `after-${Date.now()}.jpg`);
+
+        console.log("result image: " + resultUrl);
+
         await downloadFile(resultUrl, afterPath);
         afterImgDataURI = await toDataURI(afterPath);
       }
@@ -346,6 +349,8 @@ app.post(
         showAfterPlaceholder: !afterImgDataURI,
       });
 
+      console.log("Generating PDF for quote ID:", id);
+
       // ---------- PDF (dual mode) ----------
       const browser = await puppeteer.launch({
         headless: "new",
@@ -357,6 +362,7 @@ app.post(
           "--no-zygote",
         ],
       });
+
       const page = await browser.newPage();
       await page.setContent(html, { waitUntil: "networkidle0" });
       await page.emulateMediaType("screen");
@@ -374,6 +380,8 @@ app.post(
         printBackground: true,
         margin: { top: "12mm", right: "12mm", bottom: "12mm", left: "12mm" },
       });
+
+      console.log("PDF generated successfully:", fileName);
 
       await browser.close();
 

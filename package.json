@@ -1,0 +1,23 @@
+{
+  "name": "roof-quotes-api",
+  "version": "1.0.0",
+  "description": "Local API to generate roof renovation quotes as PDFs from image + bullet description.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "NODE_ENV=development nodemon src/server.js"
+  },
+  "dependencies": {
+    "dayjs": "^1.11.11",
+    "dotenv": "^17.2.3",
+    "express": "^4.19.2",
+    "fs-extra": "^11.2.0",
+    "multer": "^1.4.5-lts.1",
+    "node-fetch": "^3.3.2",
+    "openai": "^6.5.0",
+    "puppeteer": "^23.5.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}

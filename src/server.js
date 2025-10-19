@@ -25,11 +25,6 @@ const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL;
 const NANO_CALLBACK_URL =
   process.env.NANO_CALLBACK_URL || "https://example.com/callback";
 
-// 👉 NEW: default response mode (dev=file, prod=buffer), overridable per request
-const RESPONSE_MODE_DEFAULT =
-  process.env.RESPONSE_MODE ||
-  (process.env.NODE_ENV === "production" ? "buffer" : "file");
-
 // Brand & logo (runtime download)
 const BRAND_COLOR = "#eb5c25";
 const LOGO_URL =
@@ -368,43 +363,34 @@ app.post(
       await page.emulateMediaType("screen");
 
       const fileName = `${id}.pdf`;
-      const responseMode = String(
-        req.query.response || req.body.response || RESPONSE_MODE_DEFAULT
-      )
-        .toLowerCase()
-        .trim();
 
-      // Always render a buffer; write to disk only in "file" mode
+      // Render PDF to buffer
       const pdfBuffer = await page.pdf({
         format: "A4",
         printBackground: true,
         margin: { top: "12mm", right: "12mm", bottom: "12mm", left: "12mm" },
       });
 
-      console.log("PDF generated successfully:", fileName);
-
       await browser.close();
 
-      if (responseMode === "buffer") {
-        // Hosted / direct download mode
-        res.setHeader("Content-Type", "application/pdf");
-        res.setHeader(
-          "Content-Disposition",
-          `attachment; filename="${fileName}"`
-        );
-        return res.send(pdfBuffer);
-      } else {
-        // Local / file mode
-        const pdfPath = path.join(OUTPUT_DIR, fileName);
-        await fs.writeFile(pdfPath, pdfBuffer);
-        return res.json({
-          ok: true,
-          fileName,
-          pdfPath,
-          url: `/output/${encodeURIComponent(fileName)}`,
-          responseMode: "file",
-        });
-      }
+      // Always save to /output
+      const pdfPath = path.join(OUTPUT_DIR, fileName);
+      await fs.writeFile(pdfPath, pdfBuffer);
+
+      // Build a link that works both locally and when hosted
+      const fileUrl = PUBLIC_BASE_URL
+        ? `${PUBLIC_BASE_URL}/output/${encodeURIComponent(fileName)}`
+        : `/output/${encodeURIComponent(fileName)}`;
+
+      console.log("FINAL PDF CAN BE FOUND HERE: " + pdfPath);
+
+      // Respond with JSON containing the link
+      return res.json({
+        ok: true,
+        fileName,
+        pdfPath,
+        url: fileUrl,
+      });
     } catch (err) {
       console.error(err);
       res.status(500).json({
@@ -429,7 +415,4 @@ app.listen(PORT, () => {
       "ℹ️  Stel PUBLIC_BASE_URL in om BEFORE-afbeeldingen publiek toegankelijk te maken."
     );
   }
-  console.log(
-    `↔️  Standaard response mode: ${RESPONSE_MODE_DEFAULT} (override per request met ?response=buffer|file)`
-  );
 });

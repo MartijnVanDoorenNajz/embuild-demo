@@ -173,7 +173,7 @@ async function submitNanoBananaTask({
 }) {
   const body = {
     prompt,
-    type: "IMAGETOIMAGE",
+    type: "IMAGETOIAMGE",
     imageUrls: [imageUrl],
     numImages,
     image_size: imageSize,
@@ -307,6 +307,9 @@ app.post(
         const beforePublicUrl = `${PUBLIC_BASE_URL}/uploads/${path.basename(
           beforeLocalPath
         )}`;
+
+        console.log("image to use: " + beforePublicUrl);
+
         const editPrompt = await generateAfterEditPrompt({
           bulletPoints: projectBulletsNL,
           beforeImagePublicUrl: beforePublicUrl,
